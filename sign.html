@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SignedIn - Review & Sign</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #e9ecef; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #header { background: #fff; border-bottom: 1px solid #ddd; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; z-index: 50;}
+        .btn { background: #0056b3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 1rem;}
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        #workspace { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 20px; overflow-y: auto; position: relative; }
+        .page-wrapper { position: relative; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); background: white; }
+        .page-wrapper canvas { display: block; }
+        .field-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
+        .document-field { position: absolute; border: 2px solid #0056b3; background: rgba(0, 86, 179, 0.1); display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: bold; color: #0056b3; pointer-events: auto; cursor: pointer; box-sizing: border-box; }
+        .document-field.locked { border-color: #ccc; background: rgba(200, 200, 200, 0.3); color: #888; pointer-events: none; }
+        .document-field.filled { background: transparent; border: 1px solid transparent; color: #000; font-size: 1rem; justify-content: flex-start; padding-left: 5px; }
+        .document-field[data-type="signature"].filled { font-family: 'Brush Script MT', cursive; font-size: 1.8rem; justify-content: center; color: #0056b3; }
+        .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 1000;}
+        .modal { background: #fff; padding: 30px; border-radius: 8px; width: 350px; text-align: center; }
+        .modal input { width: 100%; padding: 10px; margin: 15px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+    <div id="loadingScreen" class="modal-overlay"><h2>Loading Secure Document...</h2></div>
+
+    <div id="header">
+        <div><h2>Review & Sign</h2><span id="signerName">Loading...</span></div>
+        <button class="btn" id="finishBtn" onclick="finishSigning()" disabled>Finish</button>
+    </div>
+
+    <div id="workspace"><div id="pdfContainer"></div></div>
+
+    <!-- Input Modal -->
+    <div id="inputModal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <h3 id="inputModalTitle">Enter Value</h3>
+            <input type="text" id="fieldInputValue" placeholder="Type here...">
+            <button class="btn" style="width:100%; margin-bottom:10px;" onclick="saveTextInput()">Save</button>
+            <button class="btn" style="width:100%; background:#757575;" onclick="closeModal()">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Signature Modal (Draw, Type, Adopt, Cancel) -->
+    <div id="signatureModal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="width: 400px;">
+            <h3 style="margin-top:0;">Adopt Your Signature</h3>
+            <div style="display: flex; margin-bottom: 15px; border-bottom: 1px solid #ddd;">
+                <button onclick="switchSigTab('draw')" id="tabDraw" class="btn" style="flex:1; border-radius:0; background:#0056b3; font-size:0.9rem; padding:8px;">Draw</button>
+                <button onclick="switchSigTab('type')" id="tabType" class="btn" style="flex:1; border-radius:0; background:#ccc; color:#333; font-size:0.9rem; padding:8px;">Type</button>
+            </div>
+            <div id="drawSection">
+                <canvas id="sigCanvas" width="340" height="150" style="border: 1px dashed #0056b3; background: #fafafa; border-radius: 4px; cursor: crosshair;"></canvas>
+                <button onclick="clearSigCanvas()" style="background:none; border:none; color:#c62828; font-size:0.8rem; cursor:pointer; margin-top:5px; text-decoration:underline;">Clear Drawing</button>
+            </div>
+            <div id="typeSection" style="display: none;">
+                <input type="text" id="signatureInputValue" placeholder="Type your full name" style="font-family: 'Brush Script MT', cursive; font-size: 2rem; text-align: center;">
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn" style="flex:1; background:#2e7d32;" onclick="saveAdoptedSignature()">Adopt & Sign</button>
+                <button class="btn" style="flex:1; background:#757575;" onclick="closeModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+        const SUPABASE_URL = 'https://zgwhopfhzzrsvikueeyd.supabase.co'; 
+        const SUPABASE_KEY = 'sb_publishable_B0Rkp3K6G98R_SEV30tJ0A_sVj12KG-';
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        let currentRecipient = null, currentDocument = null, transactionFields = [], activeFieldId = null;
+
+        window.onload = async () => {
+            const token = new URLSearchParams(location.search).get('token');
+            if(!token) return alert('Invalid token');
+
+            const { data: recip } = await supabaseClient.from('recipients').select('*').eq('secure_token', token).single();
+            if(!recip) return alert('Token expired or invalid.');
+            currentRecipient = recip;
+            document.getElementById('signerName').innerText = currentRecipient.name;
+
+            const { data: doc } = await supabaseClient.from('documents').select('*').eq('id', currentRecipient.document_id).single();
+            currentDocument = doc;
+
+            await renderPDF(doc.file_path);
+            await loadFields();
+            document.getElementById('loadingScreen').style.display = 'none';
+
+            // Setup Signature Canvas
+            const canvas = document.getElementById('sigCanvas');
+            const ctx = canvas.getContext('2d');
+            let drawing = false;
+            canvas.onmousedown = e => { drawing = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
+            canvas.onmousemove = e => { if(!drawing) return; ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); };
+            canvas.onmouseup = () => drawing = false;
+            canvas.onmouseleave = () => drawing = false;
+        };
+
+        async function renderPDF(filePath) {
+            const { data } = await supabaseClient.storage.from('pdf-files').download(filePath);
+            const pdf = await pdfjsLib.getDocument({ data: await data.arrayBuffer() }).promise;
+            const container = document.getElementById('pdfContainer');
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const wrapper = document.createElement('div'); wrapper.className = 'page-wrapper';
+                const canvas = document.createElement('canvas'); const viewport = page.getViewport({ scale: 1.5 });
+                canvas.height = viewport.height; canvas.width = viewport.width;
+                wrapper.style.width = `${viewport.width}px`; wrapper.style.height = `${viewport.height}px`;
+                const overlay = document.createElement('div'); overlay.className = 'field-overlay'; overlay.id = `overlay-${i}`;
+                wrapper.appendChild(canvas); wrapper.appendChild(overlay); container.appendChild(wrapper);
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            }
+        }
+
+        async function loadFields() {
+            const { data: fields } = await supabaseClient.from('document_fields').select('*').eq('document_id', currentDocument.id);
+            if(fields) {
+                transactionFields = fields;
+                fields.forEach(f => {
+                    const overlay = document.getElementById(`overlay-${f.page_number}`);
+                    if(!overlay) return;
+                    const el = document.createElement('div');
+                    el.className = 'document-field'; el.id = f.id; el.setAttribute('data-type', f.field_type);
+                    el.style.width = `${f.width}px`; el.style.height = `${f.height}px`;
+                    el.style.transform = `translate(${f.x_position}px, ${f.y_position}px)`;
+
+                    if(f.recipient_id !== currentRecipient.id) {
+                        el.classList.add('locked');
+                        el.innerText = f.filled_value || 'Locked';
+                    } else {
+                        if(f.filled_value) { el.classList.add('filled'); el.innerText = f.filled_value; }
+                        else { el.innerText = f.field_type.toUpperCase(); }
+                        el.onclick = () => handleFieldClick(f);
+                    }
+                    overlay.appendChild(el);
+                });
+            }
+            checkCompletion();
+        }
+
+        function handleFieldClick(f) {
+            activeFieldId = f.id;
+            if(f.field_type === 'signature' || f.field_type === 'initials') {
+                document.getElementById('signatureModal').style.display = 'flex';
+            } else {
+                document.getElementById('inputModal').style.display = 'flex';
+                document.getElementById('inputModalTitle').innerText = 'Enter ' + f.field_type;
+                document.getElementById('fieldInputValue').value = f.filled_value || '';
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('inputModal').style.display = 'none';
+            document.getElementById('signatureModal').style.display = 'none';
+        }
+
+        async function saveValue(val) {
+            const el = document.getElementById(activeFieldId);
+            const f = transactionFields.find(x => x.id === activeFieldId);
+            f.filled_value = val;
+            el.classList.add('filled');
+            el.innerText = val;
+            await supabaseClient.from('document_fields').update({ filled_value: val }).eq('id', activeFieldId);
+            closeModal();
+            checkCompletion();
+        }
+
+        function saveTextInput() { saveValue(document.getElementById('fieldInputValue').value); }
+        
+        function saveAdoptedSignature() {
+            let val = '';
+            if(document.getElementById('drawSection').style.display !== 'none') {
+                val = document.getElementById('sigCanvas').toDataURL();
+            } else {
+                val = document.getElementById('signatureInputValue').value;
+            }
+            if(val) saveValue(val);
+        }
+
+        function switchSigTab(mode) {
+            if(mode === 'draw') {
+                document.getElementById('drawSection').style.display = 'block';
+                document.getElementById('typeSection').style.display = 'none';
+                document.getElementById('tabDraw').style.background = '#0056b3';
+                document.getElementById('tabType').style.background = '#ccc';
+            } else {
+                document.getElementById('drawSection').style.display = 'none';
+                document.getElementById('typeSection').style.display = 'block';
+                document.getElementById('tabType').style.background = '#0056b3';
+                document.getElementById('tabDraw').style.background = '#ccc';
+            }
+        }
+
+        function clearSigCanvas() {
+            const c = document.getElementById('sigCanvas');
+            c.getContext('2d').clearRect(0, 0, c.width, c.height);
+        }
+
+        function checkCompletion() {
+            const mine = transactionFields.filter(f => f.recipient_id === currentRecipient.id && f.is_required);
+            const incomplete = mine.some(f => !f.filled_value);
+            document.getElementById('finishBtn').disabled = incomplete;
+        }
+
+        async function finishSigning() {
+            await supabaseClient.from('recipients').update({ status: 'completed' }).eq('id', currentRecipient.id);
+            await supabaseClient.from('documents').update({ status: 'Completed' }).eq('id', currentDocument.id);
+            document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh;"><h1>Successfully Signed! You may close this tab.</h1></div>';
+        }
+    </script>
+</body>
+</html>

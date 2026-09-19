@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SignedIn - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body { font-family: 'Didot', 'Bodoni MT', 'Garamond', 'Times New Roman', serif; background-color: #d9d9d9; margin: 0; padding: 0; display: flex; height: 100vh; align-items: center; justify-content: center; color: #5c4033; }
+        .modal { background: #e8e8e8; padding: 30px; border-radius: 8px; width: 500px; max-height: 85vh; overflow-y: auto; text-align: left; border: 1px solid #c4b5ae; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        h2 { font-size: 1.5rem; margin-top: 0; color: #3e2723; border-bottom: 2px solid #c4b5ae; padding-bottom: 10px; text-align: center; letter-spacing: 1px;}
+        h3 { font-size: 0.9rem; color: #4e342e; margin: 15px 0 5px 0; font-family: sans-serif; text-transform: uppercase; letter-spacing: 1px;}
+        .input-group { margin-bottom: 15px; font-family: sans-serif; }
+        .input-group label { display: block; font-size: 0.85rem; margin-bottom: 5px; color: #5c4033; font-weight: bold;}
+        .input-group input, .input-group select { width: 100%; padding: 8px; border: 1px solid #a1887f; border-radius: 4px; box-sizing: border-box; background: #fafafa; color: #3e2723;}
+        .btn { background: #6d4c41; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; margin-bottom: 10px; font-family: inherit; font-size: 1rem;}
+        .btn:hover { background: #4e342e; }
+        .btn-outline { background: transparent; border: 2px solid #6d4c41; color: #6d4c41; }
+        .doc-card { background: white; border: 1px solid #c4b5ae; padding: 15px; margin-bottom: 10px; border-radius: 4px; }
+        .doc-title { font-weight: bold; font-family: sans-serif; font-size: 1.1rem; color: #3e2723; margin-bottom: 5px;}
+        .doc-date { font-size: 0.8rem; color: #888; font-family: sans-serif; margin-bottom: 10px;}
+        .card-actions { display: flex; gap: 10px; }
+        .card-actions button { padding: 6px 12px; font-size: 0.8rem; margin: 0; width: auto; }
+        .badge { background: #8d6e63; color: white; padding: 2px 6px; border-radius: 12px; font-size: 0.7rem; }
+    </style>
+</head>
+<body>
+
+    <!-- Login Screen -->
+    <div id="authOverlay" class="modal">
+        <h2>SignedIn Studio</h2>
+        <div class="input-group"><input type="email" id="email" placeholder="Email"></div>
+        <div class="input-group"><input type="password" id="password" placeholder="Password"></div>
+        <button class="btn" onclick="authenticate()">Log In</button>
+        <p id="authStatus" style="font-size: 0.9em; color: #b71c1c; font-family: sans-serif; font-weight: bold;"></p>
+    </div>
+
+    <!-- Dashboard Screen -->
+    <div id="dashboardOverlay" class="modal" style="display:none; width: 650px;">
+        <h2>Dashboard</h2>
+        <button class="btn" onclick="showUploadModal()">+ Create New Template</button>
+        
+        <h3>My Templates (Blueprints)</h3>
+        <div id="templateList"><p style="font-family: sans-serif; font-size: 0.9em;">Loading templates...</p></div>
+        
+        <h3>Active Transactions</h3>
+        <div id="transactionList"><p style="font-family: sans-serif; font-size: 0.9em;">Loading transactions...</p></div>
+    </div>
+
+    <!-- Upload Template Modal -->
+    <div id="uploadOverlay" class="modal" style="display:none;">
+        <h2>Upload Template</h2>
+        <div class="input-group"><input type="file" id="pdfFile" accept="application/pdf"></div>
+        <div class="input-group"><input type="text" id="docTitle" placeholder="Template Name (e.g., Employment Agreement)"></div>
+        <button class="btn" onclick="uploadAndRender()">Start Editing</button>
+        <button class="btn btn-outline" onclick="loadDashboard()">Cancel</button>
+        <p id="uploadStatus" style="font-size: 0.9em; color: #2e7d32; font-family: sans-serif; font-weight: bold;"></p>
+    </div>
+
+    <!-- Send Document Modal -->
+    <div id="sendOverlay" class="modal" style="display:none;">
+        <h2>Send Document</h2>
+        <p style="font-family: sans-serif; font-size: 0.85rem; color: #666; margin-bottom: 20px;">Assign real signers to template roles.</p>
+        <h3 id="sendDocTitle"></h3>
+        <div id="sendRecipientsList" style="margin: 20px 0;"></div>
+        <button class="btn" onclick="executeSend()">Send Document & Email</button>
+        <button class="btn btn-outline" onclick="document.getElementById('sendOverlay').style.display='none'">Cancel</button>
+        <p id="sendStatus" style="font-size: 0.9em; color: #2e7d32; font-family: sans-serif; font-weight: bold;"></p>
+    </div>
+
+    <script>
+        const SUPABASE_URL = 'https://zgwhopfhzzrsvikueeyd.supabase.co'; 
+        const SUPABASE_KEY = 'sb_publishable_B0Rkp3K6G98R_SEV30tJ0A_sVj12KG-';
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        let activeSendTemplateId = null;
+        let activeSendRecipients = [];
+
+        async function authenticate() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const statusText = document.getElementById('authStatus');
+            if (!email || !password) return statusText.innerText = "Enter email and password.";
+            
+            let { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+            if (error) {
+                const signup = await supabaseClient.auth.signUp({ email, password });
+                if (signup.error) return statusText.innerText = signup.error.message;
+            }
+            document.getElementById('authOverlay').style.display = 'none';
+            loadDashboard();
+        }
+
+        async function loadDashboard() {
+            document.getElementById('uploadOverlay').style.display = 'none';
+            document.getElementById('sendOverlay').style.display = 'none';
+            document.getElementById('dashboardOverlay').style.display = 'block';
+            
+            const tList = document.getElementById('templateList');
+            const xList = document.getElementById('transactionList');
+            tList.innerHTML = '<p style="font-family: sans-serif;">Loading...</p>';
+            xList.innerHTML = '<p style="font-family: sans-serif;">Loading...</p>';
+
+            const { data, error } = await supabaseClient.from('documents').select('*').order('created_at', { ascending: false });
+            if (error) return tList.innerHTML = `<p>Error: ${error.message}</p>`;
+            
+            tList.innerHTML = '';
+            xList.innerHTML = '';
+            let hasT = false, hasX = false;
+
+            for (let doc of data) {
+                if (doc.file_path) {
+                    const date = new Date(doc.created_at).toLocaleDateString();
+                    const card = document.createElement('div');
+                    card.className = 'doc-card';
+                    
+                    if (doc.is_template) {
+                        hasT = true;
+                        card.innerHTML = `
+                            <div class="doc-title">${doc.title}</div>
+                            <div class="doc-date">Created: ${date}</div>
+                            <div class="card-actions">
+                                <button class="btn btn-outline" onclick="location.href='studio.html?id=${doc.id}'">Edit Template</button>
+                                <button class="btn" onclick="openSendModal('${doc.id}', '${doc.title}')">Use Template</button>
+                            </div>
+                        `;
+                        tList.appendChild(card);
+                    } else {
+                        hasX = true;
+                        const { data: recips } = await supabaseClient.from('recipients').select('*').eq('document_id', doc.id);
+                        let rHtml = '<div style="margin: 10px 0; padding: 8px; background: #fafafa; border-radius: 4px; font-family: sans-serif; font-size: 0.85rem;">';
+                        if (recips) {
+                            recips.forEach(r => {
+                                const signLink = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${r.secure_token}`;
+                                rHtml += `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span><strong>${r.name}</strong> (${r.role}) - ${r.status}</span> <a href="${signLink}" target="_blank">Sign Link</a></div>`;
+                            });
+                        }
+                        rHtml += '</div>';
+
+                        card.innerHTML = `
+                            <div class="doc-title">${doc.title}</div>
+                            <div class="doc-date">Sent: ${date} • Status: ${doc.status}</div>
+                            ${rHtml}
+                        `;
+                        xList.appendChild(card);
+                    }
+                }
+            }
+            if(!hasT) tList.innerHTML = '<p style="font-family: sans-serif; font-size: 0.9em;">No templates found.</p>';
+            if(!hasX) xList.innerHTML = '<p style="font-family: sans-serif; font-size: 0.9em;">No active transactions.</p>';
+        }
+
+        function showUploadModal() {
+            document.getElementById('dashboardOverlay').style.display = 'none';
+            document.getElementById('uploadOverlay').style.display = 'block';
+        }
+
+        async function uploadAndRender() {
+            const file = document.getElementById('pdfFile').files[0];
+            const title = document.getElementById('docTitle').value;
+            const statusText = document.getElementById('uploadStatus');
+            if(!file || !title) return statusText.innerText = "Select file and enter title.";
+            
+            statusText.innerText = "Uploading...";
+            const { data: { user } } = await supabaseClient.auth.getUser();
+            const filePath = `${user.id}/${Date.now()}_${file.name}`;
+            
+            await supabaseClient.storage.from('pdf-files').upload(filePath, file);
+            const { data, error } = await supabaseClient.from('documents').insert([
+                { owner_id: user.id, title: title, file_path: filePath, is_template: true }
+            ]).select();
+            
+            if(error) return statusText.innerText = "Error: " + error.message;
+            location.href = `studio.html?id=${data[0].id}`;
+        }
+
+        async function openSendModal(templateId, title) {
+            activeSendTemplateId = templateId;
+            document.getElementById('sendDocTitle').innerText = "Template: " + title;
+            document.getElementById('sendOverlay').style.display = 'block';
+            
+            const list = document.getElementById('sendRecipientsList');
+            const { data: recips } = await supabaseClient.from('recipients').select('*').eq('document_id', templateId);
+            activeSendRecipients = recips || [];
+
+            list.innerHTML = '';
+            activeSendRecipients.forEach(r => {
+                list.innerHTML += `
+                    <div class="input-group" style="background: #fafafa; padding: 12px; border: 1px solid #c4b5ae; border-radius: 4px;">
+                        <label>Role: ${r.name} <span class="badge">${r.role}</span></label>
+                        <input type="text" id="send-name-${r.id}" placeholder="Real Name" style="margin-bottom: 6px;">
+                        <input type="email" id="send-email-${r.id}" placeholder="Real Email">
+                    </div>
+                `;
+            });
+        }
+
+        async function executeSend() {
+            const statusText = document.getElementById('sendStatus');
+            statusText.innerText = "Deploying transaction...";
+            
+            const { data: { user } } = await supabaseClient.auth.getUser();
+            const { data: oldDoc } = await supabaseClient.from('documents').select('*').eq('id', activeSendTemplateId).single();
+            
+            const { data: newDoc } = await supabaseClient.from('documents').insert([
+                { owner_id: user.id, title: oldDoc.title, file_path: oldDoc.file_path, is_template: false, parent_template_id: activeSendTemplateId, status: 'Sent' }
+            ]).select().single();
+
+            let recipientMap = {};
+            let createdRecipients = [];
+
+            for (let oldRecip of activeSendRecipients) {
+                const realName = document.getElementById(`send-name-${oldRecip.id}`).value || oldRecip.name;
+                const realEmail = document.getElementById(`send-email-${oldRecip.id}`).value || oldRecip.email;
+
+                const { data: newRecip } = await supabaseClient.from('recipients').insert([
+                    { document_id: newDoc.id, name: realName, email: realEmail, role: oldRecip.role, routing_order: oldRecip.routing_order, status: 'sent' }
+                ]).select().single();
+
+                if (newRecip) {
+                    recipientMap[oldRecip.id] = newRecip.id;
+                    createdRecipients.push(newRecip);
+                }
+            }
+
+            const { data: oldFields } = await supabaseClient.from('document_fields').select('*').eq('document_id', activeSendTemplateId);
+            if (oldFields) {
+                const newFields = oldFields.map(f => ({
+                    document_id: newDoc.id, recipient_id: recipientMap[f.recipient_id] || null,
+                    field_type: f.field_type, page_number: f.page_number, x_position: f.x_position,
+                    y_position: f.y_position, width: f.width, height: f.height, is_required: f.is_required
+                }));
+                await supabaseClient.from('document_fields').insert(newFields);
+            }
+
+            // Automated email dispatch via native client
+            for (let recip of createdRecipients) {
+                const signingUrl = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${recip.secure_token}`;
+                const mailtoLink = `mailto:${recip.email}?subject=${encodeURIComponent('Please sign ' + oldDoc.title)}&body=${encodeURIComponent('Hello ' + recip.name + ',\n\nPlease sign your document here:\n' + signingUrl)}`;
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = mailtoLink;
+                document.body.appendChild(iframe);
+                setTimeout(() => document.body.removeChild(iframe), 1000);
+            }
+
+            statusText.innerText = "Success! Transaction deployed.";
+            setTimeout(() => loadDashboard(), 1500);
+        }
+    </script>
+</body>
+</html>

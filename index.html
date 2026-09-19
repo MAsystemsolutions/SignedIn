@@ -25,7 +25,6 @@
 </head>
 <body>
 
-    <!-- Login Screen -->
     <div id="authOverlay" class="modal">
         <h2>SignedIn Studio</h2>
         <div class="input-group"><input type="email" id="email" placeholder="Email"></div>
@@ -34,35 +33,30 @@
         <p id="authStatus" style="font-size: 0.9em; color: #b71c1c; font-family: sans-serif; font-weight: bold;"></p>
     </div>
 
-    <!-- Dashboard Screen -->
     <div id="dashboardOverlay" class="modal" style="display:none; width: 650px;">
         <h2>Dashboard</h2>
         <button class="btn" onclick="showUploadModal()">+ Create New Template</button>
-        
         <h3>My Templates (Blueprints)</h3>
         <div id="templateList"><p style="font-family: sans-serif; font-size: 0.9em;">Loading templates...</p></div>
-        
         <h3>Active Transactions</h3>
         <div id="transactionList"><p style="font-family: sans-serif; font-size: 0.9em;">Loading transactions...</p></div>
     </div>
 
-    <!-- Upload Template Modal -->
     <div id="uploadOverlay" class="modal" style="display:none;">
         <h2>Upload Template</h2>
         <div class="input-group"><input type="file" id="pdfFile" accept="application/pdf"></div>
-        <div class="input-group"><input type="text" id="docTitle" placeholder="Template Name (e.g., Employment Agreement)"></div>
+        <div class="input-group"><input type="text" id="docTitle" placeholder="Template Name"></div>
         <button class="btn" onclick="uploadAndRender()">Start Editing</button>
         <button class="btn btn-outline" onclick="loadDashboard()">Cancel</button>
         <p id="uploadStatus" style="font-size: 0.9em; color: #2e7d32; font-family: sans-serif; font-weight: bold;"></p>
     </div>
 
-    <!-- Send Document Modal -->
     <div id="sendOverlay" class="modal" style="display:none;">
         <h2>Send Document</h2>
         <p style="font-family: sans-serif; font-size: 0.85rem; color: #666; margin-bottom: 20px;">Assign real signers to template roles.</p>
         <h3 id="sendDocTitle"></h3>
         <div id="sendRecipientsList" style="margin: 20px 0;"></div>
-        <button class="btn" onclick="executeSend()">Send Document & Email</button>
+        <button class="btn" onclick="executeSend()">Send Document & Dispatch Real Email</button>
         <button class="btn btn-outline" onclick="document.getElementById('sendOverlay').style.display='none'">Cancel</button>
         <p id="sendStatus" style="font-size: 0.9em; color: #2e7d32; font-family: sans-serif; font-weight: bold;"></p>
     </div>
@@ -72,8 +66,7 @@
         const SUPABASE_KEY = 'sb_publishable_B0Rkp3K6G98R_SEV30tJ0A_sVj12KG-';
         const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        let activeSendTemplateId = null;
-        let activeSendRecipients = [];
+        let activeSendTemplateId = null, activeSendRecipients = [];
 
         async function authenticate() {
             const email = document.getElementById('email').value;
@@ -81,7 +74,7 @@
             const statusText = document.getElementById('authStatus');
             if (!email || !password) return statusText.innerText = "Enter email and password.";
             
-            let { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+            let { error } = await supabaseClient.auth.signInWithPassword({ email, password });
             if (error) {
                 const signup = await supabaseClient.auth.signUp({ email, password });
                 if (signup.error) return statusText.innerText = signup.error.message;
@@ -103,8 +96,7 @@
             const { data, error } = await supabaseClient.from('documents').select('*').order('created_at', { ascending: false });
             if (error) return tList.innerHTML = `<p>Error: ${error.message}</p>`;
             
-            tList.innerHTML = '';
-            xList.innerHTML = '';
+            tList.innerHTML = ''; xList.innerHTML = '';
             let hasT = false, hasX = false;
 
             for (let doc of data) {
@@ -130,17 +122,11 @@
                         let rHtml = '<div style="margin: 10px 0; padding: 8px; background: #fafafa; border-radius: 4px; font-family: sans-serif; font-size: 0.85rem;">';
                         if (recips) {
                             recips.forEach(r => {
-                                const signLink = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${r.secure_token}`;
-                                rHtml += `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span><strong>${r.name}</strong> (${r.role}) - ${r.status}</span> <a href="${signLink}" target="_blank">Sign Link</a></div>`;
+                                rHtml += `<div style="margin-bottom:4px;"><span><strong>${r.name}</strong> (${r.role}) - Status: ${r.status}</span></div>`;
                             });
                         }
                         rHtml += '</div>';
-
-                        card.innerHTML = `
-                            <div class="doc-title">${doc.title}</div>
-                            <div class="doc-date">Sent: ${date} • Status: ${doc.status}</div>
-                            ${rHtml}
-                        `;
+                        card.innerHTML = `<div class="doc-title">${doc.title}</div><div class="doc-date">Sent: ${date} • Status: ${doc.status}</div>${rHtml}`;
                         xList.appendChild(card);
                     }
                 }
@@ -165,11 +151,9 @@
             const filePath = `${user.id}/${Date.now()}_${file.name}`;
             
             await supabaseClient.storage.from('pdf-files').upload(filePath, file);
-            const { data, error } = await supabaseClient.from('documents').insert([
+            const { data } = await supabaseClient.from('documents').insert([
                 { owner_id: user.id, title: title, file_path: filePath, is_template: true }
             ]).select();
-            
-            if(error) return statusText.innerText = "Error: " + error.message;
             location.href = `studio.html?id=${data[0].id}`;
         }
 
@@ -196,7 +180,7 @@
 
         async function executeSend() {
             const statusText = document.getElementById('sendStatus');
-            statusText.innerText = "Deploying transaction...";
+            statusText.innerText = "Deploying transaction and triggering server emails...";
             
             const { data: { user } } = await supabaseClient.auth.getUser();
             const { data: oldDoc } = await supabaseClient.from('documents').select('*').eq('id', activeSendTemplateId).single();
@@ -232,18 +216,16 @@
                 await supabaseClient.from('document_fields').insert(newFields);
             }
 
-            // Automated email dispatch via native client
+            // Server-side backend call to Supabase Edge Function for automated email dispatch
             for (let recip of createdRecipients) {
                 const signingUrl = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${recip.secure_token}`;
-                const mailtoLink = `mailto:${recip.email}?subject=${encodeURIComponent('Please sign ' + oldDoc.title)}&body=${encodeURIComponent('Hello ' + recip.name + ',\n\nPlease sign your document here:\n' + signingUrl)}`;
-                const iframe = document.createElement('iframe');
-                iframe.style.display = 'none';
-                iframe.src = mailtoLink;
-                document.body.appendChild(iframe);
-                setTimeout(() => document.body.removeChild(iframe), 1000);
+                
+                await supabaseClient.functions.invoke('send-email', {
+                    body: { email: recip.email, name: recip.name, docTitle: oldDoc.title, signingUrl }
+                });
             }
 
-            statusText.innerText = "Success! Transaction deployed.";
+            statusText.innerText = "Success! Transaction deployed & emails sent.";
             setTimeout(() => loadDashboard(), 1500);
         }
     </script>

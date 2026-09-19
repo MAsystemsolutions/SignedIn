@@ -178,56 +178,80 @@
             });
         }
 
-        async function executeSend() {
-            const statusText = document.getElementById('sendStatus');
-            statusText.innerText = "Deploying transaction and triggering server emails...";
-            
-            const { data: { user } } = await supabaseClient.auth.getUser();
-            const { data: oldDoc } = await supabaseClient.from('documents').select('*').eq('id', activeSendTemplateId).single();
-            
-            const { data: newDoc } = await supabaseClient.from('documents').insert([
-                { owner_id: user.id, title: oldDoc.title, file_path: oldDoc.file_path, is_template: false, parent_template_id: activeSendTemplateId, status: 'Sent' }
-            ]).select().single();
+     async function executeSend() {
+    const statusText = document.getElementById('sendStatus');
+    statusText.innerText = "Deploying transaction and dispatching email...";
+    
+    const { data: { user } } = await supabaseClient.auth.getUser();
+    const { data: oldDoc } = await supabaseClient.from('documents').select('*').eq('id', activeSendTemplateId).single();
+    
+    const { data: newDoc } = await supabaseClient.from('documents').insert([
+        { owner_id: user.id, title: oldDoc.title, file_path: oldDoc.file_path, is_template: false, parent_template_id: activeSendTemplateId, status: 'Sent' }
+    ]).select().single();
 
-            let recipientMap = {};
-            let createdRecipients = [];
+    let recipientMap = {};
+    let createdRecipients = [];
 
-            for (let oldRecip of activeSendRecipients) {
-                const realName = document.getElementById(`send-name-${oldRecip.id}`).value || oldRecip.name;
-                const realEmail = document.getElementById(`send-email-${oldRecip.id}`).value || oldRecip.email;
+    for (let oldRecip of activeSendRecipients) {
+        const realName = document.getElementById(`send-name-${oldRecip.id}`).value || oldRecip.name;
+        const realEmail = document.getElementById(`send-email-${oldRecip.id}`).value || oldRecip.email;
 
-                const { data: newRecip } = await supabaseClient.from('recipients').insert([
-                    { document_id: newDoc.id, name: realName, email: realEmail, role: oldRecip.role, routing_order: oldRecip.routing_order, status: 'sent' }
-                ]).select().single();
+        const { data: newRecip } = await supabaseClient.from('recipients').insert([
+            { document_id: newDoc.id, name: realName, email: realEmail, role: oldRecip.role, routing_order: oldRecip.routing_order, status: 'sent' }
+        ]).select().single();
 
-                if (newRecip) {
-                    recipientMap[oldRecip.id] = newRecip.id;
-                    createdRecipients.push(newRecip);
-                }
-            }
-
-            const { data: oldFields } = await supabaseClient.from('document_fields').select('*').eq('document_id', activeSendTemplateId);
-            if (oldFields) {
-                const newFields = oldFields.map(f => ({
-                    document_id: newDoc.id, recipient_id: recipientMap[f.recipient_id] || null,
-                    field_type: f.field_type, page_number: f.page_number, x_position: f.x_position,
-                    y_position: f.y_position, width: f.width, height: f.height, is_required: f.is_required
-                }));
-                await supabaseClient.from('document_fields').insert(newFields);
-            }
-
-            // Server-side backend call to Supabase Edge Function for automated email dispatch
-            for (let recip of createdRecipients) {
-                const signingUrl = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${recip.secure_token}`;
-                
-                await supabaseClient.functions.invoke('send-email', {
-                    body: { email: recip.email, name: recip.name, docTitle: oldDoc.title, signingUrl }
-                });
-            }
-
-            statusText.innerText = "Success! Transaction deployed & emails sent.";
-            setTimeout(() => loadDashboard(), 1500);
+        if (newRecip) {
+            recipientMap[oldRecip.id] = newRecip.id;
+            createdRecipients.push(newRecip);
         }
+    }
+
+    const { data: oldFields } = await supabaseClient.from('document_fields').select('*').eq('document_id', activeSendTemplateId);
+    if (oldFields) {
+        const newFields = oldFields.map(f => ({
+            document_id: newDoc.id, recipient_id: recipientMap[f.recipient_id] || null,
+            field_type: f.field_type, page_number: f.page_number, x_position: f.x_position,
+            y_position: f.y_position, width: f.width, height: f.height, is_required: f.is_required
+        }));
+        await supabaseClient.from('document_fields').insert(newFields);
+    }
+
+    // Direct fetch to Resend API bypassing Edge Function overhead
+    for (let recip of createdRecipients) {
+        const signingUrl = `${window.location.origin}${window.location.pathname.replace('index.html', '')}sign.html?token=${recip.secure_token}`;
+        
+        try {
+            await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer re_EjZSJq2U_KL589kB47sdhQS7UGqsJMAyc`,
+                },
+                body: JSON.stringify({
+                    from: "onboarding@resend.dev", // Free Resend test domain sender
+                    to: [recip.email],
+                    subject: `Action Required: Please sign ${oldDoc.title}`,
+                    html: `
+                      <div style="font-family:sans-serif; color:#333; padding:20px;">
+                        <h2>Document Pending Signature</h2>
+                        <p>Hello <strong>${recip.name}</strong>,</p>
+                        <p>You have a document waiting for your review and signature: <strong>${oldDoc.title}</strong>.</p>
+                        <br/>
+                        <a href="${signingUrl}" style="background:#6d4c41; color:white; padding:12px 24px; text-decoration:none; border-radius:4px; font-weight:bold; display:inline-block;">Review & Sign Document</a>
+                        <br/><br/>
+                        <p style="font-size:0.85rem; color:#666;">If you did not expect this request, you can safely ignore this email.</p>
+                      </div>
+                    `
+                })
+            });
+        } catch (err) {
+            console.error("Email dispatch error:", err);
+        }
+    }
+
+    statusText.innerText = "Success! Transaction deployed & email sent.";
+    setTimeout(() => loadDashboard(), 1500);
+}
     </script>
 </body>
 </html>

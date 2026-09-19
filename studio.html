@@ -37,7 +37,7 @@
         <div class="modal">
             <h2>Manage Roles</h2>
             <div class="recipient-list" id="recipientListDisplay" style="text-align:left; margin-bottom:15px;"></div>
-            <div class="input-group"><input type="text" id="recipName" placeholder="Role Name (e.g., Employee)"></div>
+            <div class="input-group"><input type="text" id="recipName" placeholder="Role Name (e.g., Signer 1)"></div>
             <div class="input-group">
                 <select id="recipRole">
                     <option value="Signer">Signer</option>
@@ -109,17 +109,13 @@
             
             for (let i = 1; i <= pdf.numPages; i++) {
                 const page = await pdf.getPage(i);
-                const wrapper = document.createElement('div');
-                wrapper.className = 'page-wrapper';
-                const canvas = document.createElement('canvas');
-                const viewport = page.getViewport({ scale: 1.5 });
+                const wrapper = document.createElement('div'); wrapper.className = 'page-wrapper';
+                const canvas = document.createElement('canvas'); const viewport = page.getViewport({ scale: 1.5 });
                 canvas.height = viewport.height; canvas.width = viewport.width;
                 wrapper.style.width = `${viewport.width}px`; wrapper.style.height = `${viewport.height}px`;
                 
-                const overlay = document.createElement('div');
-                overlay.className = 'field-overlay'; overlay.id = `overlay-${i}`;
-                wrapper.appendChild(canvas); wrapper.appendChild(overlay);
-                container.appendChild(wrapper);
+                const overlay = document.createElement('div'); overlay.className = 'field-overlay'; overlay.id = `overlay-${i}`;
+                wrapper.appendChild(canvas); wrapper.appendChild(overlay); container.appendChild(wrapper);
                 await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
             }
         }
